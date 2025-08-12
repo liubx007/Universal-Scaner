@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>通用扫码器：QR / DataMatrix / AprilTag</title>
+  <style>
+    :root { --bg: #0b0b0c; --fg: #e8e8ea; --acc: #6ee7ff; --ok:#7dffb3; --warn:#ffd36e; }
+    html,body { margin:0; height:100%; background:var(--bg); color:var(--fg); font-family: system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial;}
+    header { padding:12px 16px; border-bottom:1px solid #222; display:flex; gap:8px; align-items:center; flex-wrap:wrap;}
+    header h1 { font-size:18px; margin:0; font-weight:600; letter-spacing:.3px;}
+    #controls { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-left:auto;}
+    select,button,input[type=checkbox]+label { font-size:14px;}
+    select,button { background:#16171a; color:var(--fg); border:1px solid #333; border-radius:10px; padding:8px 10px;}
+    button:active { transform: translateY(1px); }
+    main { display:grid; grid-template-columns: 1fr; gap:12px; padding:12px; }
+    #stage { position:relative; border-radius:16px; overflow:hidden; background:#000; }
+    video { width:100%; height:auto; display:block; }
+    canvas.overlay { position:absolute; inset:0; pointer-events:none; }
+    #log { background:#111; border:1px solid #222; border-radius:12px; padding:10px; max-height:35vh; overflow:auto; }
+    .log-item { padding:8px; border-bottom:1px dashed #2a2a2a; }
+    .log-item:last-child { border-bottom:none; }
+    .tag { display:inline-block; font-size:12px; padding:2px 6px; border:1px solid #2a2a2a; border-radius:999px; margin-right:6px; }
+    .tag.ok{ border-color: #244; color: var(--ok);}
+    .tag.warn{ border-color: #442; color: var(--warn);}
+    .badg { background:#1b1c20; padding:6px 10px; border-radius:999px; border:1px solid #2a2a2a; font-size:12px; }
+    .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    .muted{ color:#b8b8bb; }
+    #status { font-size:13px; }
+    footer{ padding:8px 12px; color:#9aa; font-size:12px; display:flex; justify-content:space-between; align-items:center;}
+    #mask {
+      position:absolute; inset:0; pointer-events:none;
+      box-shadow: 0 0 0 100vmax rgba(0,0,0,.35);
+      outline: 2px solid rgba(110,231,255,.7);
+      outline-offset: -10px; border-radius: 16px;
+      clip-path: inset(8% 6% 8% 6% round 16px);
+    }
+    a.btn { color:var(--fg); text-decoration:none; background:#16171a; border:1px solid #333; border-radius:10px; padding:8px 10px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>通用扫码器</h1>
+    <div id="controls" class="row">
+      <select id="camera"></select>
+      <button id="torchBtn" aria-pressed="false" title="手电/闪光灯">🔦 Torch</button>
+      <button id="pauseBtn" aria-pressed="false">⏸️ 暂停</button>
+      <label class="badg"><input id="apriltagToggle" type="checkbox" checked /> 启用 AprilTag</label>
+      <label class="badg">FPS
+        <select id="fps">
+          <option>15</option><option selected>24</option><option>30</option>
+        </select>
+      </label>
+    </div>
+  </header>
+
+  <main>
+    <section id="stage">
+      <video id="video" playsinline muted></video>
+      <div id="mask"></div>
+      <canvas id="overlay" class="overlay"></canvas>
+    </section>
+
+    <section id="log">
+      <div class="row" style="justify-content:space-between; margin-bottom:8px;">
+        <strong>识别结果</strong>
+        <span id="status" class="muted">相机初始化中…</span>
+      </div>
+      <div id="results"></div>
+    </section>
+  </main>
+
+  <footer>
+    <div>支持：<span class="tag">QR</span><span class="tag">DataMatrix (ECC200)</span><span class="tag">AprilTag</span></div>
+    <div class="muted">建议在 HTTPS 或本地服务器下使用，以启用摄像头权限</div>
+  </footer>
+
+  <!-- ZXing for QR/Data Matrix -->
+  <script type="module">
+    // ======= 配置区（CDN 与可选自托管） =======
+    // AprilTag WASM 可能存在多个可用来源；按顺序尝试加载（你也可以改成自己的 GitHub Pages 路径）
+    const APRILTAG_SOURCES = [
+      // 常见 CDN （若 404，请尝试下一个或自行上传 apriltag.{js,wasm} 到同目录）
+      { js: "https://cdn.jsdelivr.net/npm/apriltag-js@0.1.6/dist/apriltag.js", wasm: "https://cdn.jsdelivr.net/npm/apriltag-js@0.1.6/dist/apriltag.wasm" },
+      { js: "https://unpkg.com/apriltag-js@0.1.6/dist/apriltag.js", wasm: "https://unpkg.com/apriltag-js@0.1.6/dist/apriltag.wasm" },
+      // 自托管（把两个文件放和本页面同目录，取消下面注释）
+      // { js: "./apriltag.js", wasm: "./apriltag.wasm" },
+    ];
+
+    import { BrowserMultiFormatReader, BarcodeFormat, DecodeHintType } from "https://unpkg.com/@zxing/library@0.21.2/esm/index.js";
+
+    const video = document.getElementById('video');
+    const overlay = document.getElementById('overlay');
+    const ctx = overlay.getContext('2d', { willReadFrequently: true });
+    const cameraSel = document.getElementById('camera');
+    const torchBtn = document.getElementById('torchBtn');
+    const pauseBtn = document.getElementById('pauseBtn');
+    const fpsSel = document.getElementById('fps');
+    const statusEl = document.getElementById('status');
+    const resultsEl = document.getElementById('results');
+    const apriltagToggle = document.getElementById('apriltagToggle');
+
+    let currentStream = null;
+    let track = null;
+    let reader;
+    let running = true;
+    let targetFPS = parseInt(fpsSel.value,10);
+    let lastFrameTime = 0;
+
+    // AprilTag
+    let apriltagModule = null;
+    let apriltagReady = false;
+    let apriltagSourceUsed = null;
+
+    // ======= ZXing 初始化（仅 QR + DataMatrix） =======
+    const hints = new Map();
+    hints.set(DecodeHintType.POSSIBLE_FORMATS, [BarcodeFormat.QR_CODE, BarcodeFormat.DATA_MATRIX]);
+    reader = new BrowserMultiFormatReader(hints, targetFPS);
+
+    // ======= 相机列表/启动 =======
+    async function listCameras() {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const cams = devices.filter(d => d.kind === 'videoinput');
+      cameraSel.innerHTML = "";
+      cams.forEach((c,i) => {
+        const opt = document.createElement('option');
+        opt.value = c.deviceId;
+        opt.textContent = c.label || `Camera ${i+1}`;
+        cameraSel.appendChild(opt);
+      });
+      const preferred = cams.find(c=>/back|rear|environment/i.test(c.label))?.deviceId || cams[0]?.deviceId;
+      if (preferred) cameraSel.value = preferred;
+    }
+
+    async function startCamera(deviceId) {
+      if (currentStream) currentStream.getTracks().forEach(t=>t.stop());
+      const constraints = {
+        audio:false,
+        video:{
+          deviceId: deviceId ? {exact: deviceId} : undefined,
+          facingMode: deviceId ? undefined : { ideal: "environment" },
+          width: { ideal: 1280 }, height: { ideal: 720 }
+        }
+      };
+      currentStream = await navigator.mediaDevices.getUserMedia(constraints);
+      video.srcObject = currentStream;
+      await video.play();
+      track = currentStream.getVideoTracks()[0];
+      resizeCanvas();
+      statusEl.textContent = "相机已就绪";
+      const caps = track.getCapabilities?.() || {};
+      torchBtn.disabled = !caps.torch;
+    }
+
+    function resizeCanvas() {
+      const rect = video.getBoundingClientRect();
+      overlay.width = rect.width * devicePixelRatio;
+      overlay.height = rect.height * devicePixelRatio;
+      ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);
+    }
+    window.addEventListener('resize', resizeCanvas);
+
+    async function toggleTorch() {
+      if (!track) return;
+      const caps = track.getCapabilities?.() || {};
+      if (!caps.torch) return;
+      const pressed = torchBtn.getAttribute('aria-pressed') === 'true';
+      await track.applyConstraints({ advanced: [{ torch: !pressed }] });
+      torchBtn.setAttribute('aria-pressed', String(!pressed));
+    }
+
+    // ======= AprilTag WASM 动态加载（按候选源顺序） =======
+    async function loadAprilTag() {
+      for (const src of APRILTAG_SOURCES) {
+        try {
+          const modFactory = await import(/* @vite-ignore */ src.js);
+          apriltagModule = await modFactory.default({
+            locateFile: (p) => p.endsWith(".wasm") ? src.wasm : p
+          });
+          apriltagReady = true;
+          apriltagSourceUsed = src.js;
+          console.log("AprilTag loaded from:", src.js);
+          statusEl.textContent = "AprilTag 就绪";
+          return;
+        } catch (e) {
+          console.warn("AprilTag 来源不可用：", src, e);
+        }
+      }
+      apriltagReady = false;
+      statusEl.textContent = "AprilTag 未启用（仅 QR/DataMatrix）";
+    }
+
+    // ======= 结果日志 =======
+    function addResult(type, text) {
+      const div = document.createElement('div');
+      div.className = 'log-item';
+      const tag = document.createElement('span');
+      tag.className = 'tag ok';
+      tag.textContent = type;
+      const pre = document.createElement('div');
+      pre.style.whiteSpace = 'pre-wrap';
+      pre.textContent = text;
+      div.appendChild(tag);
+      div.appendChild(pre);
+      resultsEl.prepend(div);
+    }
+
+    // ======= 解码循环（抽帧） =======
+    async function decodeBarcodes() {
+      try {
+        const result = await reader.decodeOnceFromVideoElement(video);
+        if (result?.text) {
+          addResult(result.getBarcodeFormat(), result.text);
+        }
+      } catch (e) {
+        // 忽略超时等
+      }
+    }
+
+    function detectAprilTags() {
+      if (!apriltagReady) return;
+      try {
+        const w = video.videoWidth, h = video.videoHeight;
+        if (!w || !h) return;
+        // 复用 overlay 画布提取灰度
+        ctx.drawImage(video, 0, 0, overlay.width/devicePixelRatio, overlay.height/devicePixelRatio);
+        const img = ctx.getImageData(0, 0, w, h);
+        const gray = new Uint8Array(w*h);
+        for (let i=0, j=0; i<img.data.length; i+=4, j++) {
+          const r=img.data[i], g=img.data[i+1], b=img.data[i+2];
+          gray[j] = (r*0.299 + g*0.587 + b*0.114)|0;
+        }
+        const t0 = performance.now();
+        const detections = apriltagModule.detect(gray, w, h, { family: "tag36h11" });
+        const t1 = performance.now();
+        if (detections && detections.length) {
+          detections.forEach(det => {
+            addResult("AprilTag", `id=${det.id}  fam=${det.family}  hamming=${det.hamming}  margin=${det.decision_margin?.toFixed?.(1) ?? ""}  ${(t1-t0).toFixed(1)}ms`);
+          });
+        }
+      } catch (e) {
+        console.warn("AprilTag detect error:", e);
+      }
+    }
+
+    function loop(ts) {
+      if (!running) { requestAnimationFrame(loop); return; }
+      const dt = ts - lastFrameTime;
+      const budget = 1000/targetFPS;
+      if (dt >= budget) {
+        lastFrameTime = ts;
+        // 清理 overlay
+        ctx.clearRect(0,0,overlay.width, overlay.height);
+        // 抽帧识别
+        decodeBarcodes();
+        if (apriltagToggle.checked) detectAprilTags();
+      }
+      requestAnimationFrame(loop);
+    }
+
+    // ======= 事件 =======
+    cameraSel.addEventListener('change', ()=> startCamera(cameraSel.value).catch(err=>statusEl.textContent = err?.message||String(err)));
+    torchBtn.addEventListener('click', toggleTorch);
+    pauseBtn.addEventListener('click', ()=>{
+      running = !running;
+      pauseBtn.setAttribute('aria-pressed', String(!running));
+      pauseBtn.textContent = running ? "⏸️ 暂停" : "▶️ 继续";
+      statusEl.textContent = running ? "扫描中…" : "已暂停";
+    });
+    fpsSel.addEventListener('change', ()=> {
+      targetFPS = parseInt(fpsSel.value,10);
+      statusEl.textContent = `FPS=${targetFPS}`;
+    });
+    apriltagToggle.addEventListener('change', ()=>{
+      if (apriltagToggle.checked && !apriltagReady) {
+        statusEl.textContent = "加载 AprilTag…";
+        loadAprilTag();
+      }
+    });
+
+    // ======= 启动 =======
+    (async function boot() {
+      try {
+        await listCameras();
+        await startCamera(cameraSel.value);
+        statusEl.textContent = "扫描中…";
+        requestAnimationFrame(loop);
+        // 预加载 AprilTag
+        statusEl.textContent = "加载 AprilTag…";
+        await loadAprilTag();
+        statusEl.textContent = apriltagReady ? "AprilTag 就绪，扫描中…" : "AprilTag 未启用（仅 QR/DataMatrix）";
+      } catch (e) {
+        statusEl.textContent = e?.message || String(e);
+        console.error(e);
+      }
+    })();
+  </script>
+</body>
+</html>
