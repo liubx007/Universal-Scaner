@@ -6,7 +6,7 @@
   <title>通用扫码器（兼容版）：QR / DataMatrix / AprilTag</title>
   <style>
     :root { --bg: #0b0b0c; --fg: #e8e8ea; --acc: #6ee7ff; --ok:#7dffb3; --warn:#ffd36e; --mut:#9aa;}
-    html,body { margin:0; height:100%; background:var(--bg); color:var(--fg); font-family: system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial;}
+    html,body { margin:0; height:100%; background:var(--bg); color:var(--fg); font-family: system-ui, -apple-system, Segoe UI, Roboto;}
     header { padding:12px 16px; border-bottom:1px solid #222; display:flex; gap:8px; align-items:center; flex-wrap:wrap;}
     header h1 { font-size:18px; margin:0; font-weight:600; letter-spacing:.3px;}
     #controls { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-left:auto;}
@@ -17,23 +17,20 @@
     #stage { position:relative; border-radius:16px; overflow:hidden; background:#000; }
     video { width:100%; height:auto; display:block; background:#000; }
     canvas.overlay { position:absolute; inset:0; pointer-events:none; }
-    #log { background:#111; border:1px solid #222; border-radius:12px; padding:10px; max-height:30vh; overflow:auto; }
+    #log { background:#111; border:1px solid #222; border-radius:12px; padding:10px; max-height:28vh; overflow:auto; }
     .log-item { padding:8px; border-bottom:1px dashed #2a2a2a; }
     .log-item:last-child { border-bottom:none; }
     .tag { display:inline-block; font-size:12px; padding:2px 6px; border:1px solid #2a2a2a; border-radius:999px; margin-right:6px; }
     .tag.ok{ border-color: #244; color: var(--ok);}
+    .tag.warn{ border-color: #442; color: var(--warn);}
     .badg { background:#1b1c20; padding:6px 10px; border-radius:999px; border:1px solid #2a2a2a; font-size:12px; }
     .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
     .muted{ color:#b8b8bb; }
     #status { font-size:13px; }
     footer{ padding:8px 12px; color:#9aa; font-size:12px; display:flex; justify-content:space-between; align-items:center;}
-    #mask {
-      position:absolute; inset:0; pointer-events:none;
-      box-shadow: 0 0 0 100vmax rgba(0,0,0,.35);
-      outline: 2px solid rgba(110,231,255,.7);
-      outline-offset: -10px; border-radius: 16px;
-      clip-path: inset(8% 6% 8% 6% round 16px);
-    }
+    #mask { position:absolute; inset:0; pointer-events:none; box-shadow: 0 0 0 100vmax rgba(0,0,0,.35);
+      outline: 2px solid rgba(110,231,255,.7); outline-offset: -10px; border-radius: 16px;
+      clip-path: inset(8% 6% 8% 6% round 16px); }
     details { background:#0f1013; border:1px solid #222; border-radius:10px; padding:8px 10px;}
     summary{ cursor:pointer; color:var(--mut); }
     pre{ white-space:pre-wrap; word-break:break-word; font-family:ui-monospace,Consolas,monospace; font-size:12px; }
@@ -41,7 +38,7 @@
 </head>
 <body>
   <header>
-    <h1>通用扫码器（兼容版）</h1>
+    <h1>通用扫码器（兼容）</h1>
     <div id="controls" class="row">
       <select id="camera"></select>
       <button id="startBtn">▶️ 启动</button>
@@ -66,7 +63,7 @@
     <section id="log">
       <div class="row" style="justify-content:space-between; margin-bottom:8px;">
         <strong>识别结果</strong>
-        <span id="status" class="muted">请点击“启动”并允许相机权限</span>
+        <span id="status" class="muted">点击“启动”并允许相机权限</span>
       </div>
       <div id="results"></div>
     </section>
@@ -84,227 +81,250 @@
 
   <footer>
     <div>支持：<span class="tag">QR</span><span class="tag">DataMatrix (ECC200)</span><span class="tag">AprilTag（可选）</span></div>
-    <div class="muted">建议在 HTTPS 或 localhost 下使用，保障摄像头权限</div>
+    <div class="muted">建议在 HTTPS 或 localhost 下使用</div>
   </footer>
 
-  <!-- ZXing UMD（非模块，iOS 更稳） -->
+  <!-- ZXing UMD (global ZXing) -->
   <script src="https://unpkg.com/@zxing/library@0.21.2/umd/index.min.js"></script>
   <script>
-    (function(){
-      // ====== UI refs ======
-      const video = document.getElementById('video');
-      const overlay = document.getElementById('overlay');
-      const ctx = overlay.getContext('2d', { willReadFrequently: true });
-      const cameraSel = document.getElementById('camera');
-      const startBtn = document.getElementById('startBtn');
-      const stopBtn = document.getElementById('stopBtn');
-      const torchBtn = document.getElementById('torchBtn');
-      const fpsSel = document.getElementById('fps');
-      const statusEl = document.getElementById('status');
-      const resultsEl = document.getElementById('results');
-      const apriltagToggle = document.getElementById('apriltagToggle');
-      const diag = document.getElementById('diag');
-      const protoEl = document.getElementById('proto');
-      const hostEl = document.getElementById('host');
-      const uaEl = document.getElementById('ua');
-      protoEl.textContent = location.protocol;
-      hostEl.textContent = location.host;
-      uaEl.textContent = navigator.userAgent;
+    // AprilTag CDN 源（按需加载，不影响相机）
+    const APRILTAG_SOURCES = [
+      { js: "https://cdn.jsdelivr.net/npm/apriltag-js@0.1.6/dist/apriltag.js", wasm: "https://cdn.jsdelivr.net/npm/apriltag-js@0.1.6/dist/apriltag.wasm" },
+      { js: "https://unpkg.com/apriltag-js@0.1.6/dist/apriltag.js", wasm: "https://unpkg.com/apriltag-js@0.1.6/dist/apriltag.wasm" },
+      // { js: "./apriltag.js", wasm: "./apriltag.wasm" },
+    ];
 
-      // ====== ZXing init ======
-      const ZX = window.ZXing;
-      const hints = new Map();
-      hints.set(ZX.DecodeHintType.POSSIBLE_FORMATS, [ZX.BarcodeFormat.QR_CODE, ZX.BarcodeFormat.DATA_MATRIX]);
-      const reader = new ZX.BrowserMultiFormatReader(hints);
+    const video = document.getElementById('video');
+    const overlay = document.getElementById('overlay');
+    const ctx = overlay.getContext('2d', { willReadFrequently: true });
+    const cameraSel = document.getElementById('camera');
+    const startBtn = document.getElementById('startBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    const torchBtn = document.getElementById('torchBtn');
+    const fpsSel = document.getElementById('fps');
+    const statusEl = document.getElementById('status');
+    const resultsEl = document.getElementById('results');
+    const apriltagToggle = document.getElementById('apriltagToggle');
+    const diag = document.getElementById('diag');
+    const protoEl = document.getElementById('proto');
+    const hostEl = document.getElementById('host');
+    const uaEl = document.getElementById('ua');
 
-      // ====== state ======
-      let currentStream = null;
-      let track = null;
-      let running = false;
-      let targetFPS = parseInt(fpsSel.value,10);
-      let lastFrameTime = 0;
+    protoEl.textContent = location.protocol;
+    hostEl.textContent = location.host;
+    uaEl.textContent = navigator.userAgent;
 
-      // AprilTag
-      let apriltagModule = null;
-      let apriltagReady = false;
+    let currentStream = null;
+    let track = null;
+    let running = false;
+    let targetFPS = parseInt(fpsSel.value,10);
+    let lastFrameTime = 0;
 
-      function logDiag(){ 
-        const line = Array.from(arguments).map(a => (typeof a === 'object' ? JSON.stringify(a,null,2) : String(a))).join(' ');
-        diag.textContent = line + "\\n" + diag.textContent;
-        console.log.apply(console, arguments);
+    // ZXing reader（UMD 全局）
+    const hints = new Map();
+    hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [ZXing.BarcodeFormat.QR_CODE, ZXing.BarcodeFormat.DATA_MATRIX]);
+    const reader = new ZXing.BrowserMultiFormatReader(hints);
+    let decodeControls = null; // ZXing controls to stop
+
+    // AprilTag
+    let apriltagModule = null;
+    let apriltagReady = false;
+
+    function logDiag(...args){
+      const line = args.map(a => (typeof a === 'object' ? JSON.stringify(a,null,2) : String(a))).join(' ');
+      diag.textContent = line + "\\n" + diag.textContent;
+      console.log(...args);
+    }
+
+    async function listCameras() {
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const cams = devices.filter(d => d.kind === 'videoinput');
+        cameraSel.innerHTML = "";
+        cams.forEach((c,i) => {
+          const opt = document.createElement('option');
+          opt.value = c.deviceId;
+          opt.textContent = c.label || `Camera ${i+1}`;
+          cameraSel.appendChild(opt);
+        });
+        const preferred = cams.find(c=>/back|rear|environment/i.test(c.label))?.deviceId || cams[0]?.deviceId;
+        if (preferred) cameraSel.value = preferred;
+        logDiag("enumerateDevices:", devices);
+      } catch(e){
+        logDiag("enumerateDevices error:", e.name, e.message);
       }
+    }
 
-      async function listCameras() {
-        try {
-          const devices = await navigator.mediaDevices.enumerateDevices();
-          const cams = devices.filter(d => d.kind === 'videoinput');
-          cameraSel.innerHTML = "";
-          cams.forEach((c,i) => {
-            const opt = document.createElement('option');
-            opt.value = c.deviceId;
-            opt.textContent = c.label || `Camera ${i+1}`;
-            cameraSel.appendChild(opt);
-          });
-          const preferred = cams.find(c=>/back|rear|environment/i.test(c.label))?.deviceId || cams[0]?.deviceId;
-          if (preferred) cameraSel.value = preferred;
-          logDiag("enumerateDevices:", devices);
-        } catch(e){ logDiag("enumerateDevices error:", e.name, e.message); }
-      }
+    function resizeCanvas() {
+      const rect = video.getBoundingClientRect();
+      overlay.width = rect.width * devicePixelRatio;
+      overlay.height = rect.height * devicePixelRatio;
+      ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);
+    }
+    window.addEventListener('resize', resizeCanvas);
 
-      function resizeCanvas() {
-        const rect = video.getBoundingClientRect();
-        overlay.width = rect.width * devicePixelRatio;
-        overlay.height = rect.height * devicePixelRatio;
-        ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);
-      }
-      window.addEventListener('resize', resizeCanvas);
+    async function startCamera(deviceId) {
+      // 启动媒体流
+      if (currentStream) currentStream.getTracks().forEach(t=>t.stop());
+      const constraints = {
+        audio:false,
+        video:{
+          deviceId: deviceId ? {exact: deviceId} : undefined,
+          facingMode: deviceId ? undefined : { ideal: "environment" },
+          width: { ideal: 1280 }, height: { ideal: 720 }
+        }
+      };
+      statusEl.textContent = "请求相机权限…";
+      const st = await navigator.mediaDevices.getUserMedia(constraints);
+      currentStream = st;
+      video.srcObject = currentStream;
+      await video.play();
+      track = currentStream.getVideoTracks()[0];
+      const caps = track.getCapabilities?.() || {};
+      logDiag("getUserMedia OK. caps=", caps);
+      torchBtn.disabled = !caps.torch;
+      stopBtn.disabled = false;
+      resizeCanvas();
+      statusEl.textContent = "相机就绪，开始扫描…";
+      running = true;
 
-      async function startCamera(deviceId) {
-        if (currentStream) currentStream.getTracks().forEach(t=>t.stop());
-        const constraints = {
-          audio:false,
-          video:{
-            deviceId: deviceId ? {exact: deviceId} : undefined,
-            facingMode: deviceId ? undefined : { ideal: "environment" },
-            width: { ideal: 1280 }, height: { ideal: 720 }
-          }
-        };
-        statusEl.textContent = "请求相机权限…";
-        const st = await navigator.mediaDevices.getUserMedia(constraints);
-        currentStream = st;
-        video.srcObject = currentStream;
-        await video.play();
-        track = currentStream.getVideoTracks()[0];
+      // 启动 ZXing 连续解码（关键：UMD 的 decodeFromVideoDevice，稳定）
+      if (decodeControls) { try{ decodeControls.stop(); }catch{} }
+      decodeControls = await reader.decodeFromVideoDevice(deviceId || null, video, (result, err, controls) => {
+        if (result) {
+          addResult(result.getBarcodeFormat(), result.getText());
+        } else if (err && !(err instanceof ZXing.NotFoundException)) {
+          // 这里的不停抛出 NotFoundException 是正常的（没扫到），其它错误才记录
+          logDiag("ZXing error:", err);
+        }
+      });
+    }
+
+    function stopCamera() {
+      try{ currentStream?.getTracks().forEach(t=>t.stop()); }catch{}
+      try{ decodeControls?.stop(); }catch{}
+      currentStream = null;
+      track = null;
+      running = false;
+      video.srcObject = null;
+      stopBtn.disabled = true;
+      torchBtn.disabled = true;
+      statusEl.textContent = "已停止";
+    }
+
+    async function toggleTorch() {
+      if (!track) return;
+      try {
         const caps = track.getCapabilities?.() || {};
-        const settings = track.getSettings?.() || {};
-        logDiag("getUserMedia OK. constraints=", constraints);
-        logDiag("track.capabilities=", caps);
-        logDiag("track.settings=", settings);
-        resizeCanvas();
-        statusEl.textContent = "相机已就绪";
-        torchBtn.disabled = !caps.torch;
-        stopBtn.disabled = false;
-        running = true;
+        if (!caps.torch) throw new Error("设备不支持 torch");
+        const pressed = torchBtn.getAttribute('aria-pressed') === 'true';
+        await track.applyConstraints({ advanced: [{ torch: !pressed }] });
+        torchBtn.setAttribute('aria-pressed', String(!pressed));
+        torchBtn.textContent = !pressed ? "🔦 Torch（开）" : "🔦 Torch";
+      } catch(e) {
+        logDiag("torch error:", e.name || "", e.message || e);
+        alert("Torch 失败：" + (e.message || e));
+      }
+    }
+
+    function addResult(type, text) {
+      const div = document.createElement('div');
+      div.className = 'log-item';
+      const tag = document.createElement('span');
+      tag.className = 'tag ok';
+      tag.textContent = type;
+      const pre = document.createElement('div');
+      pre.style.whiteSpace = 'pre-wrap';
+      pre.textContent = text;
+      div.appendChild(tag);
+      div.appendChild(pre);
+      resultsEl.prepend(div);
+      // 震动反馈
+      if (navigator.vibrate) navigator.vibrate(60);
+    }
+
+    // ===== AprilTag 懒加载 + 检测（不影响 ZXing） =====
+    function loadAprilTag() {
+      if (apriltagReady) return;
+      (async () => {
+        for (const src of APRILTAG_SOURCES) {
+          try {
+            await new Promise((resolve, reject)=>{
+              const s = document.createElement('script');
+              s.src = src.js;
+              s.onload = ()=> resolve();
+              s.onerror = ()=> reject(new Error("AprilTag js load fail"));
+              document.body.appendChild(s);
+            });
+            if (!window.apriltag) throw new Error("apriltag global not found");
+            // patch wasm path
+            if (window.apriltag.setWasmPath) window.apriltag.setWasmPath(src.wasm);
+            apriltagModule = await window.apriltag();
+            apriltagReady = true;
+            statusEl.textContent = "AprilTag 就绪";
+            logDiag("AprilTag loaded:", src.js);
+            return;
+          } catch(e) {
+            logDiag("AprilTag 来源不可用：", src, e.message || e);
+          }
+        }
+        statusEl.textContent = "AprilTag 未启用（仅 QR/DataMatrix）";
+      })();
+    }
+
+    function detectAprilTags() {
+      if (!apriltagReady || !apriltagToggle.checked) return;
+      const w = video.videoWidth, h = video.videoHeight;
+      if (!w || !h) return;
+      ctx.drawImage(video, 0, 0, overlay.width/devicePixelRatio, overlay.height/devicePixelRatio);
+      const img = ctx.getImageData(0, 0, w, h);
+      const gray = new Uint8Array(w*h);
+      for (let i=0, j=0; i<img.data.length; i+=4, j++) {
+        const r=img.data[i], g=img.data[i+1], b=img.data[i+2];
+        gray[j] = (r*0.299 + g*0.587 + b*0.114)|0;
+      }
+      const t0 = performance.now();
+      const dets = apriltagModule.detect(gray, w, h, { family: "tag36h11" });
+      const t1 = performance.now();
+      if (dets && dets.length) {
+        dets.forEach(det => addResult("AprilTag", `id=${det.id}  fam=${det.family}  hamming=${det.hamming}  margin=${det.decision_margin?.toFixed?.(1) ?? ""}  ${(t1-t0).toFixed(1)}ms`));
+      }
+    }
+
+    function loop(ts) {
+      if (!running) return;
+      const dt = ts - lastFrameTime;
+      const budget = 1000/parseInt(fpsSel.value,10);
+      if (dt >= budget) {
+        lastFrameTime = ts;
+        ctx.clearRect(0,0,overlay.width, overlay.height);
+        detectAprilTags();
+      }
+      requestAnimationFrame(loop);
+    }
+
+    cameraSel.addEventListener('change', ()=> startCamera(cameraSel.value).catch(e=>{ statusEl.textContent = e?.name || "启动失败"; logDiag("startCamera error:", e.name, e.message); }));
+    startBtn.addEventListener('click', async ()=>{
+      try {
+        await listCameras();
+        await startCamera(cameraSel.value);
         requestAnimationFrame(loop);
+      } catch(e){
+        statusEl.textContent = e?.name || "启动失败";
+        logDiag("start error:", e.name, e.message);
+        alert("启动失败：" + (e.message || e));
       }
+    });
+    stopBtn.addEventListener('click', stopCamera);
+    torchBtn.addEventListener('click', toggleTorch);
+    apriltagToggle.addEventListener('change', ()=>{ if (apriltagToggle.checked) loadAprilTag(); });
 
-      function stopCamera() {
-        try{ currentStream?.getTracks().forEach(t=>t.stop()); }catch{}
-        currentStream = null;
-        track = null;
-        running = false;
-        video.srcObject = null;
-        stopBtn.disabled = true;
-        torchBtn.disabled = true;
-        statusEl.textContent = "已停止";
-      }
-
-      async function toggleTorch() {
-        if (!track) return;
-        try {
-          const caps = track.getCapabilities?.() || {};
-          if (!caps.torch) throw new Error("设备不支持 torch");
-          const pressed = torchBtn.getAttribute('aria-pressed') === 'true';
-          await track.applyConstraints({ advanced: [{ torch: !pressed }] });
-          torchBtn.setAttribute('aria-pressed', String(!pressed));
-          torchBtn.textContent = !pressed ? "🔦 Torch（开）" : "🔦 Torch";
-        } catch(e) {
-          logDiag("torch error:", e.name || "", e.message || e);
-          alert("Torch 失败：" + (e.message || e));
-        }
-      }
-
-      function addResult(type, text) {
-        const div = document.createElement('div');
-        div.className = 'log-item';
-        const tag = document.createElement('span');
-        tag.className = 'tag ok';
-        tag.textContent = type;
-        const pre = document.createElement('div');
-        pre.style.whiteSpace = 'pre-wrap';
-        pre.textContent = text;
-        div.appendChild(tag);
-        div.appendChild(pre);
-        resultsEl.prepend(div);
-      }
-
-      async function decodeBarcodes() {
-        try {
-          const result = await reader.decodeOnceFromVideoElement(video);
-          if (result?.text) addResult(result.getBarcodeFormat(), result.text);
-        } catch {}
-      }
-
-      function ensureAprilTagLoaded(cb){
-        if (apriltagReady) return cb();
-        const srcJS = "https://unpkg.com/apriltag-js@0.1.6/dist/apriltag.js";
-        const srcWASM = "https://unpkg.com/apriltag-js@0.1.6/dist/apriltag.wasm";
-        const s = document.createElement('script');
-        s.src = srcJS;
-        s.onload = function(){
-          if (!window.apriltag) { logDiag("apriltag.js loaded but no window.apriltag"); return; }
-          window.apriltag({ locateFile: (p)=> p.endsWith('.wasm') ? srcWASM : p }).then(mod=>{
-            apriltagModule = mod; apriltagReady = true; statusEl.textContent = "AprilTag 就绪"; cb();
-          }).catch(e=>{ logDiag("AprilTag init error:", e.message || e); });
-        };
-        s.onerror = function(){ logDiag("加载 apriltag.js 失败"); };
-        document.head.appendChild(s);
-      }
-
-      function detectAprilTags() {
-        if (!apriltagReady || !apriltagToggle.checked) return;
-        const w = video.videoWidth, h = video.videoHeight;
-        if (!w || !h) return;
-        ctx.drawImage(video, 0, 0, overlay.width/devicePixelRatio, overlay.height/devicePixelRatio);
-        const img = ctx.getImageData(0, 0, w, h);
-        const gray = new Uint8Array(w*h);
-        for (let i=0, j=0; i<img.data.length; i+=4, j++) {
-          const r=img.data[i], g=img.data[i+1], b=img.data[i+2];
-          gray[j] = (r*0.299 + g*0.587 + b*0.114)|0;
-        }
-        const t0 = performance.now();
-        const dets = apriltagModule.detect(gray, w, h, { family: "tag36h11" });
-        const t1 = performance.now();
-        if (dets && dets.length) {
-          dets.forEach(det => addResult("AprilTag", "id="+det.id+" fam="+det.family+" hamming="+det.hamming+" margin="+(det.decision_margin?.toFixed?.(1)||"")+" "+(t1-t0).toFixed(1)+"ms"));
-        }
-      }
-
-      function loop(ts) {
-        if (!running) return;
-        const dt = ts - lastFrameTime;
-        const budget = 1000/targetFPS;
-        if (dt >= budget) {
-          lastFrameTime = ts;
-          ctx.clearRect(0,0,overlay.width, overlay.height);
-          decodeBarcodes();
-          detectAprilTags();
-        }
-        requestAnimationFrame(loop);
-      }
-
-      // events
-      cameraSel.addEventListener('change', ()=> startCamera(cameraSel.value).catch(e=>{ statusEl.textContent = e?.name || "启动失败"; logDiag("startCamera error:", e.name, e.message); }));
-      startBtn.addEventListener('click', async ()=>{
-        try { await listCameras(); await startCamera(cameraSel.value); }
-        catch(e){ statusEl.textContent = e?.name || "启动失败"; logDiag("start error:", e.name, e.message); alert("启动失败：" + (e.message || e)); }
-      });
-      stopBtn.addEventListener('click', stopCamera);
-      torchBtn.addEventListener('click', toggleTorch);
-      fpsSel.addEventListener('change', ()=> { targetFPS = parseInt(fpsSel.value,10); statusEl.textContent = "FPS="+targetFPS; });
-      apriltagToggle.addEventListener('change', ()=>{
-        if (apriltagToggle.checked && !apriltagReady) {
-          statusEl.textContent = "加载 AprilTag…";
-          ensureAprilTagLoaded(function(){ statusEl.textContent = "AprilTag 就绪"; });
-        }
-      });
-
-      // boot
+    (async function boot(){
       if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
-        statusEl.textContent = "提示：请在 HTTPS 或 localhost 下使用（否则相机权限可能被拒）";
-        logDiag("协议警告：", location.protocol);
+        statusEl.textContent = "提示：请在 HTTPS 或 localhost 下使用";
+        logDiag("协议：", location.protocol);
       }
-      listCameras();
+      await listCameras();
     })();
   </script>
 </body>
