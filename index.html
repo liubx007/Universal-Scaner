@@ -3,20 +3,16 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>Mobile AprilTag Detector (AprilTagWasm 适配版)</title>
+  <title>AprilTag on Mobile (CDN版)</title>
   <style>
-    :root{--bg:#0b0f14;--fg:#e6eef7;--muted:#9fb3c8;--accent:#3da9fc}
-    html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial}
+    body{margin:0;background:#0b0f14;color:#e6eef7;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial}
     header{position:sticky;top:0;background:#121924;border-bottom:1px solid #1b2430;z-index:10}
     header .row{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;padding:.6rem .75rem}
-    button,input,select{background:#0e141d;color:var(--fg);border:1px solid #243242;border-radius:10px;padding:.45rem .6rem}
-    button{font-weight:600}
-    button:disabled{opacity:.55}
+    button,input,select{background:#0e141d;color:#e6eef7;border:1px solid #243242;border-radius:10px;padding:.45rem .6rem}
     main{position:relative}
     #video{width:100%;height:100%;object-fit:cover;display:block;background:#000}
     #overlay{position:absolute;inset:0;display:block}
-    #msgs{padding:.5rem .75rem;color:var(--muted);border-top:1px solid #1b2430}
-    #diag{padding:.5rem .75rem;color:#f4bf4f;word-break:break-all;border-top:1px dashed #2a3546}
+    #msgs{padding:.5rem .75rem;color:#9fb3c8;border-top:1px solid #1b2430}
   </style>
 </head>
 <body>
@@ -24,13 +20,7 @@
   <div class="row">
     <button id="startBtn">▶ 开始</button>
     <button id="stopBtn" disabled>⏹ 停止</button>
-    <button id="switchBtn">🔄 切换前/后摄</button>
-    <label>默认Tag尺寸(m)
-      <input id="tagSize" type="number" step="0.001" min="0.01" value="0.05" style="width:7ch">
-    </label>
-    <label>FOV(°)
-      <input id="fov" type="number" step="1" min="30" max="100" value="60" style="width:5ch">
-    </label>
+    <label>FOV(°)<input id="fov" type="number" step="1" value="60" style="width:5ch"></label>
     <label>分辨率
       <select id="res">
         <option value="1280x720">1280×720</option>
@@ -38,7 +28,7 @@
         <option value="640x480">640×480</option>
       </select>
     </label>
-    <label><input id="showPose" type="checkbox" checked> 显示姿态轴</label>
+    <label>默认Tag尺寸(m)<input id="tagSize" type="number" step="0.001" value="0.05" style="width:7ch"></label>
     <label><input id="showIds" type="checkbox" checked> 显示ID</label>
   </div>
 </header>
@@ -47,215 +37,126 @@
   <video id="video" playsinline muted></video>
   <canvas id="overlay"></canvas>
 </main>
-
 <div id="msgs">准备中…</div>
-<div id="diag"></div>
 
-<!-- 关键：确保 .wasm 与本页同目录时可以被定位 -->
+<!-- 关键：把 wasm 指到远程文件 -->
 <script>
   window.Module = window.Module || {};
-  Module.locateFile = Module.locateFile || function(path){
-    const base = location.href.replace(/[#?].*$/,'').replace(/[^\/]*$/,'');
-    return base + path;
+  Module.locateFile = function(path){
+    if(path.endsWith('.wasm')){
+      return 'https://raw.githubusercontent.com/arenaxr/apriltag-js-standalone/master/html/apriltag_wasm.wasm';
+    }
+    return path;
   };
 </script>
-<script defer src="./apriltag_wasm.js"></script>
+<!-- 使用已知可用的 apriltag wasm js（公开仓库） -->
+<script defer src="https://raw.githubusercontent.com/arenaxr/apriltag-js-standalone/master/html/apriltag_wasm.js"></script>
+
 <script>
 (function(){
   const els = {
-    start: startBtn, stop: stopBtn, switch: switchBtn,
-    video: video, overlay: overlay,
-    tagSize: tagSize, fov: fov, res: res,
-    showPose: showPose, showIds: showIds,
-    msgs: msgs, diag: diag
+    start: document.getElementById('startBtn'),
+    stop: document.getElementById('stopBtn'),
+    video: document.getElementById('video'),
+    overlay: document.getElementById('overlay'),
+    fov: document.getElementById('fov'),
+    res: document.getElementById('res'),
+    tagSize: document.getElementById('tagSize'),
+    showIds: document.getElementById('showIds'),
+    msgs: document.getElementById('msgs'),
   };
 
-  let detector = null;      // 期望是 { detect(), set_camera_info(), set_tag_size(), ... }
-  let mod = null;           // 原始 Emscripten 模块（如果只有低层导出）
-  let stream = null;
-  let running = false;
-  let facing = 'environment';
+  let detector=null, stream=null, running=false;
 
-  const seenSizes = new Map();
+  function msg(t){ els.msgs.textContent=t; }
 
-  function log(t){ els.msgs.textContent = t; }
-  function diag(t){ els.diag.innerHTML = t; }
-
-  // --- 初始化 (优先适配你现在的 AprilTagWasm) ---
   async function initDetector(){
-    // 打印可疑全局符号，便于诊断
-    const keys = Object.keys(window).filter(k=>/(April|apriltag|create)/i.test(k)).sort();
-    diag(`<b>全局符号:</b> ${keys.join(', ') || '(无)'}<br>`);
-
-    // 1) 直接支持 Apriltag()
-    if(typeof window.Apriltag === 'function'){
-      return new Promise((resolve,reject)=>{
-        try{
-          detector = Apriltag(()=>{
-            diag(els.diag.innerHTML + '使用 <b>Apriltag()</b> 初始化成功<br>');
-            resolve();
-          });
-        }catch(e){ reject(e); }
-      });
-    }
-
-    // 2) 直接支持 createApriltagDetector()
-    if(typeof window.createApriltagDetector === 'function'){
-      detector = await window.createApriltagDetector();
-      diag(els.diag.innerHTML + '使用 <b>createApriltagDetector()</b> 初始化成功<br>');
-      return;
-    }
-
-    // 3) 适配你当前的 AprilTagWasm（大概率是 MODULARIZE=1 的 Emscripten 工厂）
-    if(typeof window.AprilTagWasm === 'function'){
-      let ret = null;
+    return new Promise((resolve,reject)=>{
+      if(typeof window.Apriltag!=='function'){
+        reject(new Error('Apriltag 未加载（检查网络或被拦截）')); return;
+      }
       try{
-        ret = window.AprilTagWasm(); // 可能返回 thenable / Promise
-      }catch(e){
-        // 有些构建要求传入配置对象：AprilTagWasm({ locateFile: ... })
-        ret = window.AprilTagWasm({ locateFile: Module.locateFile });
-      }
-      mod = (typeof ret?.then === 'function') ? await ret : ret;
-      if(!mod) throw new Error('AprilTagWasm() 未返回模块');
-
-      // 尝试查找“高层封装”的 detector（不同构建可能把它挂在模块上）
-      // 常见命名：mod.Apriltag / mod.createApriltagDetector / mod.detector / mod.default
-      const candidateNames = ['Apriltag','createApriltagDetector','detector','default'];
-      for(const name of candidateNames){
-        if(typeof mod[name] === 'function'){
-          // 尝试两种工厂模式：callback 或 promise
+        detector = Apriltag(()=>{
           try{
-            const r = mod[name](( )=>{});
-            detector = (typeof r?.then === 'function') ? await r : r;
-          }catch(_){}
-          if(!detector && typeof mod[name] === 'function'){
-            try{ detector = await mod[name](); }catch(_){}
-          }
-        }
-      }
-
-      if(detector){
-        diag(els.diag.innerHTML + '通过 <b>AprilTagWasm()</b> 找到高层 detector<br>');
-        return;
-      }
-
-      // 若没有高层封装，打印模块导出，等待我下一步给你写 cwrap 适配
-      const modKeys = Object.keys(mod).sort();
-      diag(els.diag.innerHTML +
-        `<div style="margin-top:.5rem"><b>AprilTagWasm 模块可用键名 (${modKeys.length})：</b><br><code>${modKeys.join(', ')}</code></div>` +
-        `<div style="margin-top:.5rem;color:#ffdda6">未发现现成的高级 detect() 封装。我可以根据你这份键名清单，为你写一个基于 <code>mod.cwrap</code> 的适配层（需要导出函数名，例如 <code>_detect</code> / <code>_init</code> / <code>_free</code> 等）。把这段“键名清单”发给我即可。</div>`
-      );
-      throw new Error('未找到 Apriltag 工厂函数 (Apriltag/createApriltagDetector)，且 AprilTagWasm 未暴露高级封装');
-    }
-
-    throw new Error('未找到 Apriltag 工厂函数 (Apriltag/createApriltagDetector/AprilTagWasm)');
+            detector.set_max_detections?.(0);
+            detector.set_return_pose?.(1);
+            detector.set_return_solutions?.(0);
+          }catch(e){}
+          resolve();
+        });
+      }catch(e){ reject(e); }
+    });
   }
 
-  // --- 摄像头 ---
   async function openCamera(){
-    const [w,h] = els.res.value.split('x').map(Number);
-    const constraints = { video:{ facingMode:{ideal:facing}, width:{ideal:w}, height:{ideal:h} }, audio:false };
+    const [w,h]=els.res.value.split('x').map(Number);
     if(stream) stream.getTracks().forEach(t=>t.stop());
-    stream = await navigator.mediaDevices.getUserMedia(constraints);
-    els.video.srcObject = stream;
-    await els.video.play();
+    stream = await navigator.mediaDevices.getUserMedia({video:{width:{ideal:w},height:{ideal:h},facingMode:{ideal:'environment'}},audio:false});
+    els.video.srcObject=stream; await els.video.play();
   }
 
-  // --- (占位) 检测循环：只有在 detector 具备 detect() 时才启动 ---
-  async function detectLoop(){
-    if(!running) return;
-    if(!detector || typeof detector.detect !== 'function'){
-      log('检测器未提供 detect()。请把页面底部“AprilTagWasm 模块可用键名”发我，我给你写适配。');
-      return;
-    }
-
-    try{
-      const vw = els.video.videoWidth, vh = els.video.videoHeight;
-      if(!vw || !vh){ requestAnimationFrame(detectLoop); return; }
-
-      // 抓帧并转灰度
-      const off = detectLoop._off || (detectLoop._off = document.createElement('canvas'));
-      if(off.width!==vw){ off.width=vw; off.height=vh; }
-      const octx = off.getContext('2d', {willReadFrequently:true});
-      octx.drawImage(els.video,0,0,vw,vh);
-      const {data} = octx.getImageData(0,0,vw,vh);
-      let gray = detectLoop._gray;
-      if(!gray || gray.length!==vw*vh) gray = detectLoop._gray = new Uint8Array(vw*vh);
-      for(let i=0,j=0;i<data.length;i+=4,++j){ gray[j]=(data[i]*.299+data[i+1]*.587+data[i+2]*.114)|0; }
-
-      // 相机内参
-      const fov = (+els.fov.value||60)*Math.PI/180;
-      const fx = 0.5*vw/Math.tan(0.5*fov), fy = fx, cx=vw/2, cy=vh/2;
-      if(typeof detector.set_camera_info === 'function'){ detector.set_camera_info(fx,fy,cx,cy); }
-
-      // 运行检测（高层封装期望：detect(gray, w, h)）
-      const detections = await detector.detect(gray, vw, vh);
-
-      // Tag 尺度
-      const defSize = parseFloat(els.tagSize.value)||0.05;
-      if(typeof detector.set_tag_size === 'function'){
-        for(const d of detections){ if(!seenSizes.has(d.id)){ detector.set_tag_size(d.id, defSize); seenSizes.set(d.id, defSize); } }
-      }
-
-      // 画框（简化）
-      drawOverlay(detections);
-      requestAnimationFrame(detectLoop);
-    }catch(e){
-      log('检测出错：' + e.message);
-      console.error(e);
-    }
-  }
-
-  function drawOverlay(detections=[]){
-    const ctx = els.overlay.getContext('2d');
-    const rect = els.video.getBoundingClientRect();
-    const scale = devicePixelRatio;
-    const w = Math.max(1, Math.round(rect.width*scale));
-    const h = Math.max(1, Math.round(rect.height*scale));
-    if(els.overlay.width!==w || els.overlay.height!==h){ els.overlay.width=w; els.overlay.height=h; }
-    ctx.clearRect(0,0,w,h);
-    ctx.lineWidth=3; ctx.strokeStyle='rgba(61,169,252,.95)'; ctx.fillStyle='rgba(230,238,247,.95)'; ctx.font=`${14*scale}px system-ui`;
-    for(const d of detections){
+  function draw(dets=[]){
+    const ctx=els.overlay.getContext('2d');
+    const r=els.video.getBoundingClientRect(), s=devicePixelRatio||1;
+    const W=Math.max(1,Math.round(r.width*s)), H=Math.max(1,Math.round(r.height*s));
+    if(els.overlay.width!==W||els.overlay.height!==H){ els.overlay.width=W; els.overlay.height=H; }
+    ctx.clearRect(0,0,W,H);
+    ctx.lineWidth=3; ctx.strokeStyle='rgba(61,169,252,.95)'; ctx.fillStyle='rgba(230,238,247,.95)'; ctx.font=`${14*s}px system-ui`;
+    for(const d of dets){
       if(!d?.corners) continue;
-      const c = d.corners.map(k=>({x:k.x*scale,y:k.y*scale}));
+      const c=d.corners.map(k=>({x:k.x*s,y:k.y*s}));
       ctx.beginPath(); ctx.moveTo(c[0].x,c[0].y); for(let i=1;i<c.length;i++) ctx.lineTo(c[i].x,c[i].y); ctx.closePath(); ctx.stroke();
       if(els.showIds.checked){ ctx.fillText(`ID:${d.id}`, c[0].x+6, c[0].y+6); }
     }
-    log(`检测数: ${detections.length}`);
+    msg(`检测数: ${dets.length}`);
   }
 
-  // --- 事件 ---
+  async function loop(){
+    if(!running) return;
+    const vw=els.video.videoWidth, vh=els.video.videoHeight;
+    if(!vw||!vh){ requestAnimationFrame(loop); return; }
+
+    // 抓帧->灰度
+    const off = loop._off || (loop._off=document.createElement('canvas'));
+    if(off.width!==vw){ off.width=vw; off.height=vh; }
+    const octx=off.getContext('2d',{willReadFrequently:true});
+    octx.drawImage(els.video,0,0,vw,vh);
+    const {data}=octx.getImageData(0,0,vw,vh);
+    let gray=loop._gray; if(!gray||gray.length!==vw*vh) gray=loop._gray=new Uint8Array(vw*vh);
+    for(let i=0,j=0;i<data.length;i+=4,++j){ gray[j]=(data[i]*.299+data[i+1]*.587+data[i+2]*.114)|0; }
+
+    // 相机内参近似
+    const fov=(+els.fov.value||60)*Math.PI/180;
+    const fx=0.5*vw/Math.tan(0.5*fov), fy=fx, cx=vw/2, cy=vh/2;
+    detector.set_camera_info?.(fx,fy,cx,cy);
+
+    const dets = await detector.detect(gray,vw,vh).catch(e=>{ msg('检测错误：'+e.message); return []; });
+    const size=parseFloat(els.tagSize.value)||0.05;
+    if(Array.isArray(dets)&&detector.set_tag_size){
+      for(const d of dets){ detector.set_tag_size(d.id,size); }
+    }
+    draw(dets);
+    requestAnimationFrame(loop);
+  }
+
   els.start.addEventListener('click', async ()=>{
     try{
-      els.start.disabled = true;
+      els.start.disabled=true;
       await initDetector();
       await openCamera();
-      running = true;
-      log('摄像头已开启，检测器已就绪');
-      requestAnimationFrame(detectLoop);
-    }catch(err){
-      log('无法开启：' + err.message + '（请确认使用 HTTPS 且已授权相机）');
-      els.start.disabled = false;
+      running=true;
+      msg('摄像头已开启，开始检测…');
+      requestAnimationFrame(loop);
+    }catch(e){
+      msg('无法开启：'+e.message+'（请确认HTTPS并允许相机）');
+      els.start.disabled=false;
     }
   });
 
   els.stop.addEventListener('click', ()=>{
-    running = false;
-    els.stop.disabled = true;
+    running=false; els.stop.disabled=true;
     if(stream) stream.getTracks().forEach(t=>t.stop());
-    log('已停止');
-    els.start.disabled = false;
-  });
-
-  els.switch.addEventListener('click', async ()=>{
-    facing = (facing==='environment' ? 'user' : 'environment');
-    if(running){ await openCamera(); }
-  });
-
-  window.addEventListener('resize', ()=>{
-    const rect = els.video.getBoundingClientRect();
-    els.overlay.width = Math.round(rect.width * devicePixelRatio);
-    els.overlay.height = Math.round(rect.height * devicePixelRatio);
+    msg('已停止'); els.start.disabled=false;
   });
 })();
 </script>
