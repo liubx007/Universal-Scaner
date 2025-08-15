@@ -2,163 +2,303 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
-  <title>极简扫码（QR + DataMatrix）</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Mobile AprilTag Detector</title>
+  <meta name="description" content="GitHub Pages 可直接部署的手机端 AprilTag 识别与追踪（WASM）。" />
   <style>
-    html,body{margin:0;height:100%;background:#0b0b0c;color:#e8e8ea;font-family:system-ui,-apple-system,Segoe UI,Roboto}
-    header{padding:12px 16px;border-bottom:1px solid #222}
-    h1{margin:0 0 6px 0;font-size:18px}
-    main{padding:12px;display:grid;gap:12px}
-    #stage{position:relative;background:#000;border-radius:12px;overflow:hidden}
-    video{width:100%;height:auto;display:block;background:#000}
-    .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
-    button,select{background:#16171a;color:#e8e8ea;border:1px solid #333;border-radius:10px;padding:8px 10px;font-size:14px}
-    #log{white-space:pre-wrap;background:#111;border:1px solid #222;border-radius:8px;padding:8px;max-height:35vh;overflow:auto;font-family:ui-monospace,Consolas,monospace;font-size:12px}
-    .tag{display:inline-block;border:1px solid #2a2a2a;border-radius:999px;padding:2px 6px;margin-right:6px;font-size:12px}
+    :root{--bg:#0b0f14;--fg:#e6eef7;--muted:#9fb3c8;--accent:#3da9fc;--warn:#f4bf4f;--ok:#2cb67d}
+    *{box-sizing:border-box}
+    html,body{height:100%;margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,"Apple Color Emoji","Segoe UI Emoji"}
+    #app{display:grid;grid-template-rows:auto 1fr auto;min-height:100%}
+    header{position:sticky;top:0;background:rgba(11,15,20,.85);backdrop-filter:blur(8px);z-index:20;border-bottom:1px solid #1b2430}
+    header .row{display:flex;gap:.5rem;align-items:center;padding:.6rem .75rem;flex-wrap:wrap}
+    header .row > *{margin:.1rem 0}
+    .btn{appearance:none;border:1px solid #243242;border-radius:12px;padding:.55rem .8rem;background:#121924;color:var(--fg);font-weight:600}
+    .btn[disabled]{opacity:.5}
+    .btn.primary{border-color:#2b6cb0;background:#123457}
+    .btn.warn{border-color:#665517;background:#3a2e11;color:#ffe8b0}
+    input,select{background:#0e141d;color:var(--fg);border:1px solid #243242;border-radius:10px;padding:.5rem .6rem}
+    label{font-size:.9rem;color:var(--muted)}
+    .controls{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap}
+    .stat{font-variant-numeric:tabular-nums}
+    main{position:relative;overflow:hidden}
+    #video{width:100%;height:100%;object-fit:cover;display:block;background:#000}
+    canvas#overlay{position:absolute;inset:0;display:block}
+    #msgs{min-height:1.25rem;padding:.4rem .75rem;color:var(--muted);border-top:1px solid #1b2430}
+    .tagchip{display:inline-flex;gap:.3rem;align-items:center;background:#0e1921;border:1px solid #1e2b38;border-radius:999px;padding:.2rem .5rem;margin:.15rem;font-size:.8rem}
+    .chipbox{overflow-x:auto;white-space:nowrap;padding:.35rem .5rem;border-top:1px solid #1b2430}
+    .badge{padding:.15rem .4rem;border-radius:.5rem;border:1px solid #2a384a;background:#0e1620;color:#a7bed4;font-size:.8rem}
   </style>
 </head>
 <body>
+<div id="app">
   <header>
-    <h1>极简扫码（QR + DataMatrix）</h1>
-    <div>仅依赖 ZXing（CDN），无 AprilTag。若这版可用，再加 AprilTag。</div>
+    <div class="row controls">
+      <button id="startBtn" class="btn primary">▶ 开始</button>
+      <button id="stopBtn" class="btn" disabled>⏹ 停止</button>
+      <button id="switchBtn" class="btn">🔄 切换前/后摄</button>
+      <label>默认Tag尺寸(m)
+        <input id="tagSize" type="number" step="0.001" min="0.01" value="0.05" style="width:7ch"/>
+      </label>
+      <label>FOV(°)
+        <input id="fov" type="number" step="1" min="30" max="100" value="60" style="width:5ch"/>
+      </label>
+      <label>分辨率
+        <select id="res">
+          <option value="1280x720">1280×720</option>
+          <option value="1920x1080">1920×1080</option>
+          <option value="640x480">640×480</option>
+        </select>
+      </label>
+      <label><input id="showPose" type="checkbox" checked/> 显示姿态轴</label>
+      <label><input id="showIds" type="checkbox" checked/> 显示ID</label>
+      <span class="badge">tag36h11</span>
+    </div>
   </header>
   <main>
-    <div class="row">
-      <select id="camera"></select>
-      <button id="start">▶️ 启动</button>
-      <button id="stop" disabled>⏹️ 停止</button>
-      <button id="torch" disabled>🔦 手电</button>
-      <span id="status"></span>
-    </div>
-    <section id="stage">
-      <video id="video" playsinline muted></video>
-    </section>
-    <div>
-      <strong>识别结果</strong>
-      <div id="results"></div>
-    </div>
-    <div>
-      <strong>日志</strong>
-      <div id="log"></div>
-    </div>
+    <video id="video" playsinline muted></video>
+    <canvas id="overlay"></canvas>
   </main>
+  <div class="chipbox" id="chips" aria-live="polite"></div>
+  <div id="msgs" class="stat">准备中… 请先点击“开始”，并允许使用摄像头。</div>
+</div>
 
-  <!-- ZXing UMD from CDN (non-module) -->
-  <script src="https://unpkg.com/@zxing/library@0.21.2"></script>
-  <script>
-    const logEl = document.getElementById('log');
-    const resultsEl = document.getElementById('results');
-    const statusEl = document.getElementById('status');
-    const video = document.getElementById('video');
-    const cameraSel = document.getElementById('camera');
-    const startBtn = document.getElementById('start');
-    const stopBtn = document.getElementById('stop');
-    const torchBtn = document.getElementById('torch');
+<!--
+  依赖：将 apriltag_wasm.js 与 apriltag_wasm.wasm 放在与本文件同目录。
+  GitHub Pages（HTTPS）可直接部署：根目录需包含 index.html、apriltag_wasm.js、apriltag_wasm.wasm。
+-->
+<script>
+  // 一些 WASM 发行版（Emscripten）会读取 Module.locateFile() 来寻找 .wasm 路径。
+  // 这里做一个兜底，确保 .wasm 与本页同目录时能被正确加载。
+  // 如果你的 apriltag_wasm.js 使用其它命名（例如 ApriltagModule），可按需要改名。
+  window.Module = window.Module || {};
+  Module.locateFile = Module.locateFile || function(path){
+    // 将路径指向当前目录
+    const base = location.href.replace(/[#?].*$/,'').replace(/[^\/]*$/,'');
+    return base + path;
+  };
+</script>
+<script defer src="./apriltag_wasm.js"></script>
+<script>
+(function(){
+  const els = {
+    start: document.getElementById('startBtn'),
+    stop: document.getElementById('stopBtn'),
+    switch: document.getElementById('switchBtn'),
+    video: document.getElementById('video'),
+    overlay: document.getElementById('overlay'),
+    tagSize: document.getElementById('tagSize'),
+    fov: document.getElementById('fov'),
+    res: document.getElementById('res'),
+    showPose: document.getElementById('showPose'),
+    showIds: document.getElementById('showIds'),
+    msgs: document.getElementById('msgs'),
+    chips: document.getElementById('chips'),
+  };
 
-    let selectedDeviceId = null;
-    let controls = null;  // ZXing controls
-    let stream = null;
-    let track = null;
+  let detector = null; // Apriltag detector instance (from wasm)
+  let stream = null;   // MediaStream
+  let facing = 'environment';
+  let running = false;
+  let processing = false;
+  const seenSizes = new Map(); // tagId -> size(m)
+  const tracks = new Map();    // tagId -> {x,y,ts}
+  const ema = (prev, next, a=0.25)=> prev==null? next : prev*(1-a)+next*a;
 
-    function log(...args){
-      const line = args.map(a => (typeof a === 'object' ? JSON.stringify(a,null,2) : String(a))).join(' ');
-      logEl.textContent = line + "\\n" + logEl.textContent;
-      console.log(...args);
+  // 一些 apriltag wasm 发行版会在全局暴露 Apriltag() 工厂；
+  // 如果你的版本是 createApriltagDetector() 或 new AprilTag(), 可以在这里改一下创建逻辑。
+  function initApriltag(){
+    return new Promise((resolve, reject)=>{
+      try {
+        if(typeof Apriltag === 'function'){
+          detector = Apriltag(()=>{ // wasm ready callback
+            try{
+              if(detector.set_max_detections) detector.set_max_detections(0);
+              if(detector.set_return_pose) detector.set_return_pose(1);
+              if(detector.set_return_solutions) detector.set_return_solutions(0);
+              logMsg('AprilTag 引擎已加载。');
+              resolve();
+            }catch(e){ reject(e); }
+          });
+        } else if(typeof createApriltagDetector === 'function'){
+          createApriltagDetector().then(inst=>{ detector = inst; logMsg('AprilTag 引擎已加载。'); resolve(); }).catch(reject);
+        } else {
+          reject(new Error('未找到 Apriltag 工厂函数（Apriltag/createApriltagDetector）。'));
+        }
+      } catch(e){ reject(e); }
+    });
+  }
+
+  // Camera helpers
+  async function openCamera(){
+    const [w,h] = els.res.value.split('x').map(Number);
+    const constraints = { video: { facingMode: { ideal: facing }, width: {ideal:w}, height:{ideal:h} }, audio:false };
+    if(stream){ stream.getTracks().forEach(t=>t.stop()); }
+    stream = await navigator.mediaDevices.getUserMedia(constraints);
+    els.video.srcObject = stream;
+    await els.video.play();
+    sizeCanvasToVideo();
+    applyCameraIntrinsics();
+  }
+
+  function sizeCanvasToVideo(){
+    const rect = els.video.getBoundingClientRect();
+    els.overlay.width = Math.max(1, Math.round(rect.width * devicePixelRatio));
+    els.overlay.height = Math.max(1, Math.round(rect.height * devicePixelRatio));
+  }
+
+  function applyCameraIntrinsics(){
+    const vw = els.video.videoWidth || 1280;
+    const vh = els.video.videoHeight || 720;
+    const fov = (+els.fov.value||60) * Math.PI/180;
+    const fx = 0.5*vw/Math.tan(0.5*fov);
+    const fy = fx; // 近似
+    const cx = vw/2, cy = vh/2;
+    if(detector && detector.set_camera_info) detector.set_camera_info(fx, fy, cx, cy);
+  }
+
+  function logMsg(t){ els.msgs.textContent = t; }
+
+  function addChip(id){
+    if(document.getElementById('chip-'+id)) return;
+    const el = document.createElement('span');
+    el.className = 'tagchip';
+    el.id = 'chip-'+id;
+    el.textContent = 'Tag '+id;
+    els.chips.appendChild(el);
+  }
+
+  async function detectLoop(){
+    if(!running) return;
+    if(!detector || !stream) return;
+    if(processing){ requestAnimationFrame(detectLoop); return; }
+    processing = true;
+
+    try{
+      const vw = els.video.videoWidth, vh = els.video.videoHeight;
+      if(vw===0||vh===0){ processing=false; requestAnimationFrame(detectLoop); return; }
+
+      const off = detectLoop._off || (detectLoop._off = document.createElement('canvas'));
+      if(off.width!==vw){ off.width=vw; off.height=vh; }
+      const octx = off.getContext('2d', {willReadFrequently:true});
+      octx.drawImage(els.video, 0,0, vw, vh);
+      const {data} = octx.getImageData(0,0,vw,vh);
+
+      // RGB -> grayscale Uint8
+      let gray = detectLoop._gray;
+      if(!gray || gray.length!==vw*vh) gray = detectLoop._gray = new Uint8Array(vw*vh);
+      for(let i=0,j=0;i<data.length;i+=4,++j){ gray[j] = (data[i]*0.299 + data[i+1]*0.587 + data[i+2]*0.114)|0; }
+
+      // Run detector (API: detect(gray,width,height))
+      const detections = await detector.detect(gray, vw, vh);
+
+      // Set tag size for pose (once per id)
+      const defSize = parseFloat(els.tagSize.value)||0.05;
+      if(detector.set_tag_size){
+        for(const d of detections){ if(!seenSizes.has(d.id)){ detector.set_tag_size(d.id, defSize); seenSizes.set(d.id, defSize); } }
+      }
+
+      drawOverlay(detections);
+
+      processing = false;
+      requestAnimationFrame(detectLoop);
+    }catch(err){
+      processing=false; running=false;
+      logMsg('检测出错：'+err.message);
+      console.error(err);
     }
+  }
 
-    async function listCameras(){
-      const devices = await navigator.mediaDevices.enumerateDevices();
-      const cams = devices.filter(d => d.kind === 'videoinput');
-      cameraSel.innerHTML = "";
-      cams.forEach((d,i)=>{
-        const opt = document.createElement('option');
-        opt.value = d.deviceId;
-        opt.textContent = d.label || `Camera ${i+1}`;
-        cameraSel.appendChild(opt);
-      });
-      selectedDeviceId = cams.find(c=>/back|rear|environment/i.test(c.label))?.deviceId || cams[0]?.deviceId || null;
-      if (selectedDeviceId) cameraSel.value = selectedDeviceId;
-      log("enumerateDevices:", devices);
-    }
+  function drawOverlay(detections){
+    const ctx = els.overlay.getContext('2d');
+    const scale = devicePixelRatio;
+    const vw = els.video.getBoundingClientRect().width * scale;
+    const vh = els.video.getBoundingClientRect().height * scale;
+    if(els.overlay.width!==vw || els.overlay.height!==vh){ els.overlay.width = vw; els.overlay.height = vh; }
 
-    async function start(){
-      try{
-        // 先用 gUM 拉流，控制分辨率，便于 torch/能力检测
-        if (stream) stop();
-        const constraints = {
-          audio:false,
-          video: selectedDeviceId ? { deviceId: { exact:selectedDeviceId }, width:{ideal:1280}, height:{ideal:720} }
-                                 : { facingMode:{ideal:"environment"}, width:{ideal:1280}, height:{ideal:720} }
-        };
-        stream = await navigator.mediaDevices.getUserMedia(constraints);
-        video.srcObject = stream;
-        await video.play();
-        track = stream.getVideoTracks()[0];
-        const caps = track.getCapabilities?.() || {};
-        torchBtn.disabled = !caps.torch;
-        log("gUM ok. caps=", caps, "settings=", track.getSettings?.());
-        // 用 ZXing 连续回调模式解码
-        const hints = new Map();
-        const formats = [ ZXing.BarcodeFormat.QR_CODE, ZXing.BarcodeFormat.DATA_MATRIX ];
-        hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, formats);
-        const codeReader = new ZXing.BrowserMultiFormatReader(hints);
-        controls = await codeReader.decodeFromVideoDevice(selectedDeviceId || undefined, video, (result, err, ctrl)=>{
-          if (result) {
-            const div = document.createElement('div');
-            div.innerHTML = '<span class="tag">'+ result.getBarcodeFormat() +'</span> ' + result.getText();
-            resultsEl.prepend(div);
-            // 轻微震动反馈（若支持）
-            if (navigator.vibrate) navigator.vibrate(30);
-          }
-          if (err && !(err instanceof ZXing.NotFoundException)) {
-            log("decode error:", err);
-          }
-        });
-        startBtn.disabled = true;
-        stopBtn.disabled = false;
-        statusEl.textContent = "扫描中…";
-      }catch(e){
-        log("start error:", e.name, e.message);
-        alert("启动失败：" + e.name + "\\n" + e.message);
+    ctx.clearRect(0,0,vw,vh);
+    ctx.save();
+    ctx.lineWidth = 3; ctx.font = `${14*scale}px system-ui`; ctx.textBaseline='top';
+
+    const now = performance.now();
+    for(const d of detections){
+      addChip(d.id);
+      const prev = tracks.get(d.id) || {x:null,y:null,ts:now};
+      const cx = ema(prev.x, d.center.x*scale), cy = ema(prev.y, d.center.y*scale);
+      tracks.set(d.id, {x:cx,y:cy,ts:now});
+
+      const c = d.corners.map(k=>({x:k.x*scale,y:k.y*scale}));
+      ctx.strokeStyle = 'rgba(61,169,252,0.95)';
+      ctx.beginPath(); ctx.moveTo(c[0].x,c[0].y); for(let i=1;i<c.length;i++) ctx.lineTo(c[i].x,c[i].y); ctx.closePath(); ctx.stroke();
+
+      ctx.fillStyle = 'rgba(44,182,125,0.95)';
+      ctx.beginPath(); ctx.arc(cx,cy,6,0,Math.PI*2); ctx.fill();
+
+      if(els.showIds.checked){ ctx.fillStyle = 'rgba(230,238,247,.95)'; ctx.fillText(`ID:${d.id}`, c[0].x+6, c[0].y+6); }
+
+      if(els.showPose.checked && d.pose && d.pose.R && d.pose.t){
+        const vwpx = els.video.videoWidth, vhpx = els.video.videoHeight;
+        const fov = (+els.fov.value||60)*Math.PI/180; const fx = 0.5*vwpx/Math.tan(0.5*fov); const fy = fx; const cx0 = vwpx/2, cy0 = vhpx/2;
+        const K = {fx,fy,cx:cx0,cy:cy0};
+        const R = d.pose.R, t = d.pose.t; // R: 3x3, t: [x,y,z] (m)
+        const axisLen = (seenSizes.get(d.id)||parseFloat(els.tagSize.value)||0.05) * 1.5; // meters
+        const origin = project([0,0,0], R, t, K);
+        const X = project([axisLen,0,0], R, t, K);
+        const Y = project([0,axisLen,0], R, t, K);
+        const Z = project([0,0,axisLen], R, t, K);
+        const s = (p)=>({x:p.x*scale, y:p.y*scale});
+        drawAxis(ctx, s(origin), s(X), s(Y), s(Z));
       }
     }
 
-    function stop(){
-      try{ controls?.stop(); }catch{}
-      controls = null;
-      try{ stream?.getTracks().forEach(t=>t.stop()); }catch{}
-      stream = null; track = null;
-      startBtn.disabled = false;
-      stopBtn.disabled = true;
-      statusEl.textContent = "已停止";
-    }
+    for(const [id, tr] of tracks){ if(now - tr.ts > 800) tracks.delete(id); }
 
-    async function toggleTorch(){
-      if (!track) return;
-      try{
-        const pressed = torchBtn.getAttribute('data-on')==='true';
-        await track.applyConstraints({ advanced:[{ torch: !pressed }] });
-        torchBtn.setAttribute('data-on', String(!pressed));
-        torchBtn.textContent = !pressed ? "🔦 手电（开）" : "🔦 手电";
-      }catch(e){
-        log("torch error:", e.name, e.message);
-        alert("Torch 失败：" + e.name + "\\n" + e.message);
-      }
-    }
+    ctx.restore();
 
-    cameraSel.addEventListener('change', ()=>{ selectedDeviceId = cameraSel.value; });
-    startBtn.addEventListener('click', start);
-    stopBtn.addEventListener('click', stop);
-    torchBtn.addEventListener('click', toggleTorch);
+    drawOverlay._last = drawOverlay._last || now;
+    const dt = now - drawOverlay._last; drawOverlay._last = now;
+    const fps = (1000/dt).toFixed(1);
+    logMsg(`检测数: ${detections.length} | ~${fps} FPS | 摄像头: ${facing}`);
+  }
 
-    // 初始化
-    (async function boot(){
-      if (location.protocol !== 'https:' && location.hostname !== 'localhost') {
-        alert("请在 HTTPS 或 localhost 下打开，否则浏览器可能拒绝相机权限。");
-      }
-      await listCameras();
-      statusEl.textContent = "就绪，点击【启动】开始扫描";
-    })();
-  </script>
+  function project(P, R, t, K){
+    const Xc = [
+      R[0][0]*P[0]+R[0][1]*P[1]+R[0][2]*P[2]+t[0],
+      R[1][0]*P[0]+R[1][1]*P[1]+R[1][2]*P[2]+t[1],
+      R[2][0]*P[0]+R[2][1]*P[1]+R[2][2]*P[2]+t[2]
+    ];
+    const x = (K.fx*Xc[0]/Xc[2]) + K.cx;
+    const y = (K.fy*Xc[1]/Xc[2]) + K.cy;
+    return {x,y};
+  }
+
+  function drawAxis(ctx, O, X, Y, Z){
+    ctx.save(); ctx.lineWidth=4;
+    ctx.strokeStyle='rgba(255,80,80,0.95)'; line(O,X);
+    ctx.strokeStyle='rgba(80,255,80,0.95)'; line(O,Y);
+    ctx.strokeStyle='rgba(80,160,255,0.95)'; line(O,Z);
+    ctx.restore();
+    function line(a,b){ ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke(); }
+  }
+
+  // Wire UI
+  els.start.addEventListener('click', async ()=>{
+    try{
+      if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){ throw new Error('当前浏览器不支持摄像头 API'); }
+      els.start.disabled = true;
+      if(!detector) await initApriltag();
+      await openCamera();
+      running = true; els.stop.disabled=false; logMsg('摄像头已开启，开始检测…');
+      requestAnimationFrame(detectLoop);
+    }catch(err){ logMsg('无法开启：'+ err.message + '（请确认使用 HTTPS，且已授权相机）'); els.start.disabled=false; }
+  });
+  els.stop.addEventListener('click', ()=>{ running=false; els.stop.disabled=true; if(stream){stream.getTracks().forEach(t=>t.stop());} logMsg('已停止'); els.start.disabled=false; });
+  els.switch.addEventListener('click', async ()=>{ facing = (facing==='environment'? 'user':'environment'); if(running){ await openCamera(); }});
+  els.fov.addEventListener('change', ()=> applyCameraIntrinsics());
+  els.res.addEventListener('change', async ()=>{ if(running) await openCamera(); });
+
+  window.addEventListener('resize', sizeCanvasToVideo);
+})();
+</script>
 </body>
 </html>
