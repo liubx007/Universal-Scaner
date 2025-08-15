@@ -3,21 +3,129 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>AprilTag Detector</title>
-  <script defer src="./apriltag_wasm.js"></script>
+  <title>Mobile AprilTag Detector</title>
+  <meta name="description" content="GitHub Pages 可直接部署的手机端 AprilTag 识别与追踪（WASM）。" />
+  <style>
+    body{margin:0;background:#0b0f14;color:#e6eef7;font-family:sans-serif;}
+    header{padding:0.5rem;background:#121924;position:sticky;top:0;}
+    button,input,select{margin:0.2rem;}
+    main{position:relative;}
+    #video{width:100%;background:black;}
+    #overlay{position:absolute;left:0;top:0;}
+    #msgs{padding:0.4rem;font-size:0.9rem;color:#9fb3c8;}
+    #diag{padding:0.4rem;font-size:0.8rem;color:#f4bf4f;word-break:break-all;}
+  </style>
 </head>
 <body>
-  <h1>AprilTag Detector</h1>
-  <p>请点击“开始”并允许访问摄像头</p>
-  <button onclick="init()">开始</button>
-  <script>
-    function init(){
-      if(typeof Apriltag === 'function'){
-        alert('检测器已加载，可以开始识别标签');
-      } else {
-        alert('未找到 Apriltag 工厂函数，请检查 apriltag_wasm.js 是否在同目录');
-      }
+<header>
+  <button id="startBtn">▶ 开始</button>
+  <button id="stopBtn" disabled>⏹ 停止</button>
+  <button id="switchBtn">🔄 切换前/后摄</button>
+  <label>默认Tag尺寸(m) <input id="tagSize" type="number" step="0.001" value="0.05" style="width:5ch"/></label>
+  <label>FOV(°) <input id="fov" type="number" step="1" value="60" style="width:4ch"/></label>
+  <label>分辨率
+    <select id="res">
+      <option value="1280x720">1280×720</option>
+      <option value="1920x1080">1920×1080</option>
+      <option value="640x480">640×480</option>
+    </select>
+  </label>
+  <label><input id="showPose" type="checkbox" checked/> 显示姿态轴</label>
+  <label><input id="showIds" type="checkbox" checked/> 显示ID</label>
+</header>
+<main>
+  <video id="video" playsinline muted></video>
+  <canvas id="overlay"></canvas>
+</main>
+<div id="msgs">准备中…</div>
+<div id="diag"></div>
+
+<script>
+  window.Module = window.Module || {};
+  Module.locateFile = Module.locateFile || function(path){
+    const base = location.href.replace(/[#?].*$/,'').replace(/[^\/]*$/,'');
+    return base + path;
+  };
+</script>
+<script defer src="./apriltag_wasm.js"></script>
+<script>
+(function(){
+  const els = {
+    start: document.getElementById('startBtn'),
+    stop: document.getElementById('stopBtn'),
+    switch: document.getElementById('switchBtn'),
+    video: document.getElementById('video'),
+    overlay: document.getElementById('overlay'),
+    tagSize: document.getElementById('tagSize'),
+    fov: document.getElementById('fov'),
+    res: document.getElementById('res'),
+    showPose: document.getElementById('showPose'),
+    showIds: document.getElementById('showIds'),
+    msgs: document.getElementById('msgs'),
+    diag: document.getElementById('diag'),
+  };
+
+  let detector = null;
+  let stream = null;
+  let facing = 'environment';
+  let running = false;
+
+  function logMsg(t){ els.msgs.textContent = t; }
+  function diagMsg(t){ els.diag.textContent = t; }
+
+  async function initApriltag(){
+    // 打印全局变量，方便诊断
+    diagMsg('全局符号: ' + Object.keys(window).filter(k=>/April|create/i.test(k)).join(', '));
+
+    if(typeof window.Apriltag === 'function'){
+      return new Promise((resolve,reject)=>{
+        detector = Apriltag(()=>{
+          logMsg('AprilTag 引擎已加载 (Apriltag)');
+          resolve();
+        });
+      });
+    } else if(typeof window.createApriltagDetector === 'function'){
+      detector = await window.createApriltagDetector();
+      logMsg('AprilTag 引擎已加载 (createApriltagDetector)');
+    } else {
+      throw new Error('未找到 Apriltag 工厂函数 (Apriltag/createApriltagDetector)');
     }
-  </script>
+  }
+
+  async function openCamera(){
+    const [w,h] = els.res.value.split('x').map(Number);
+    const constraints = { video: { facingMode: { ideal: facing }, width: {ideal:w}, height:{ideal:h} }, audio:false };
+    if(stream) stream.getTracks().forEach(t=>t.stop());
+    stream = await navigator.mediaDevices.getUserMedia(constraints);
+    els.video.srcObject = stream;
+    await els.video.play();
+  }
+
+  els.start.addEventListener('click', async ()=>{
+    try{
+      els.start.disabled = true;
+      await initApriltag();
+      await openCamera();
+      running = true;
+      logMsg('摄像头已开启，检测器已就绪');
+    }catch(err){
+      logMsg('无法开启：' + err.message);
+    }
+  });
+
+  els.stop.addEventListener('click', ()=>{
+    running = false;
+    if(stream) stream.getTracks().forEach(t=>t.stop());
+    logMsg('已停止');
+    els.start.disabled = false;
+  });
+
+  els.switch.addEventListener('click', async ()=>{
+    facing = (facing==='environment'?'user':'environment');
+    if(running) await openCamera();
+  });
+
+})();
+</script>
 </body>
 </html>
